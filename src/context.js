@@ -30,6 +30,8 @@ class Context {
         this.env = Object.assign({}, crawlerSetup.env);
         this.customData = crawlerSetup.customData;
 
+        this.log = log;
+        this.globalStore = crawlerSetup.globalStore;
         this.requestList = crawlerSetup.requestList;
         this.requestQueue = crawlerSetup.requestQueue;
         this.dataset = crawlerSetup.dataset;
@@ -62,11 +64,11 @@ class Context {
  * and returns it, along with a reference to its state object.
  *
  * @param {CrawlerSetup} crawlerSetup
- * @param {Object} environment
+ * @param {Object} pageFunctionArguments
  * @returns {{{context: Context, state: Object}}}
  */
-exports.createContext = (crawlerSetup, environment) => {
-    const context = new Context(crawlerSetup, environment);
+exports.createContext = (crawlerSetup, pageFunctionArguments) => {
+    const context = new Context(crawlerSetup, pageFunctionArguments);
     return {
         context,
         state: context[state],

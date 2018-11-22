@@ -15,6 +15,13 @@ exports.DEFAULT_VIEWPORT = {
 };
 
 /**
+ * Error message produced by Browser on failed resource load. This is used to
+ * suppress logging of this message when blocking resources.
+ * @type {string}
+ */
+exports.RESOURCE_LOAD_ERROR_MESSAGE = 'Failed to load resource: net::ERR_FAILED';
+
+/**
  * Name of file that holds Page Function in local development.
  * @type {string}
  */

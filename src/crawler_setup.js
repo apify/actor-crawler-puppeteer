@@ -4,8 +4,7 @@ const _ = require('underscore');
 const tools = require('./tools');
 const { META_KEY, DEFAULT_VIEWPORT, DEVTOOLS_TIMEOUT_SECS } = require('./consts');
 const GlobalStore = require('./global_store');
-const attachContext = require('./context.browser');
-const attachNodeProxy = require('./node_proxy.browser');
+const { createContext } = require('./context');
 
 const { utils: { log, puppeteer } } = Apify;
 
@@ -73,8 +72,8 @@ class CrawlerSetup {
         // Side effects
         if (this.input.debugLog) log.setLevel(log.LEVELS.DEBUG);
 
-        // Used to store page specific data.
-        this.pageContexts = new WeakMap();
+        // Page Function needs to be evaluated.
+        this.evaledPageFunction = tools.evalPageFunctionOrThrow(this.input.pageFunction);
 
         // Used to store data that persist navigations
         this.globalStore = new GlobalStore();
@@ -150,17 +149,7 @@ class CrawlerSetup {
     }
 
     async _gotoFunction({ request, page }) {
-        // Create a new page context with a new random key for Apify namespace.
-        const pageContext = {
-            apifyNamespace: await tools.createRandomHash(),
-        };
-        this.pageContexts.set(page, pageContext);
-
-        // Enables legacy willFinishLater by injecting a finish function
-        // into the Browser context.
-        pageContext.asyncWrapper = tools.createWillFinishLaterWrapper();
-
-        // Attach a console listener to get all logs as soon as possible.
+        // Attach a console listener to get all logs from Browser context.
         if (this.input.browserLog) tools.dumpConsole(page);
 
         // Hide WebDriver before navigation
@@ -170,41 +159,9 @@ class CrawlerSetup {
         if (this.blockedResources.size) await puppeteer.blockResources(page, Array.from(this.blockedResources));
 
         // Invoke navigation.
-        const response = await page.goto(request.url, {
+        return page.goto(request.url, {
             timeout: (this.devtools ? DEVTOOLS_TIMEOUT_SECS : this.input.pageLoadTimeoutSecs) * 1000,
         });
-
-        // Inject selected libraries
-        if (this.input.injectJQuery) await puppeteer.injectJQuery(page);
-        if (this.input.injectUnderscore) await puppeteer.injectUnderscore(page);
-
-        // Attach function handles to the page to enable use of Node.js APIs from Browser context.
-        pageContext.browserHandles = {
-            globalStore: await tools.createBrowserHandlesForObject(page, this.globalStore, ['get', 'set', 'size']),
-            log: await tools.createBrowserHandlesForObject(page, log, ['info', 'debug', 'warning', 'error']),
-            finish: await tools.createBrowserHandle(page, pageContext.asyncWrapper.finish),
-            requestList: await tools.createBrowserHandlesForObject(page, this.requestList, ['getState', 'isEmpty', 'isFinished']),
-            dataset: await tools.createBrowserHandlesForObject(page, this.dataset, ['pushData']),
-            keyValueStore: await tools.createBrowserHandlesForObject(page, this.keyValueStore, ['getValue', 'setValue']),
-        };
-        if (this.requestQueue) {
-            pageContext.browserHandles.requestQueue = await tools.createBrowserHandlesForObject(
-                page,
-                this.requestQueue,
-                ['isEmpty', 'isFinished', 'addRequest'],
-            );
-        }
-
-        // Add Apify namespace to Browser context
-        await page.evaluate((namespace) => { window[namespace] = {}; }, pageContext.apifyNamespace);
-
-        // Inject Context class into the Browser, to be able to
-        // construct a context instance later.
-        await page.evaluate(attachContext, pageContext.apifyNamespace);
-        await page.evaluate(attachNodeProxy, pageContext.apifyNamespace);
-
-        await page.evaluate(tools.wrapPageFunction(this.input.pageFunction, pageContext.apifyNamespace));
-        return response;
     }
 
     _handleFailedRequestFunction({ request }) { // eslint-disable-line class-methods-use-this
@@ -231,8 +188,6 @@ class CrawlerSetup {
      * @returns {Function}
      */
     async _handlePageFunction({ request, response, page, puppeteerPool }) {
-        const pageContext = this.pageContexts.get(page);
-
         /**
          * PRE-PROCESSING
          */
@@ -244,41 +199,17 @@ class CrawlerSetup {
         const aborted = await this._handleMaxResultsPerCrawl();
         if (aborted) return;
 
-        // Backwards compatibility hack to support Crawler codebase.
-        const requestWithLabel = tools.copyLabelToRequest(request);
-
         // Setup Context and pass the configuration down to Browser.
-        const contextOptions = {
-            crawlerSetup: Object.assign(
-                _.pick(this, ['rawInput', 'env']),
-                _.pick(this.input, ['customData', 'useRequestQueue', 'injectJQuery', 'injectUnderscore']),
-            ),
-            browserHandles: this.pageContexts.get(page).browserHandles,
-            pageFunctionArguments: {
-                request: requestWithLabel,
-            },
-        };
+        const { context, state } = createContext(this, { request, response, page, puppeteerPool });
 
         /**
          * USER FUNCTION INVOCATION
          */
-        const namespace = pageContext.apifyNamespace;
-        const { pageFunctionResult, state } = await page.evaluate(async (ctxOpts, namespc) => {
-            /* eslint-disable no-shadow */
-            const { context, state } = window[namespc].createContext(ctxOpts);
-            const pageFunctionResult = await window[namespc].pageFunction(context);
-            return {
-                pageFunctionResult,
-                state,
-            };
-        }, contextOptions, namespace);
+        const pageFunctionResult = await this.evaledPageFunction(context);
 
         /**
          * POST-PROCESSING
          */
-        // Make sure the system waits for the page function to finish
-        // if the user invoked willFinishLater.
-        await this._handleWillFinishLater(page, state);
 
         // Enqueue more links if Pseudo URLs and a link selector are available,
         // unless the user invoked the `skipLinks()` context function
@@ -296,14 +227,6 @@ class CrawlerSetup {
         log.info(`User set limit of ${this.input.maxResultsPerCrawl} results was reached. Finishing the crawl.`);
         await this.crawler.abort();
         return true;
-    }
-
-    async _handleWillFinishLater(page, state) {
-        if (!state.willFinishLater) return;
-        const { asyncWrapper } = this.pageContexts.get(page);
-        if (asyncWrapper.finished) return;
-        log.debug('Waiting for context.finish() to be called!');
-        await asyncWrapper.createFinishPromise();
     }
 
     async _handleLinks(page, state, request) {

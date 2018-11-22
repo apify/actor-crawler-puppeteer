@@ -1,6 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const vm = require('vm');
 const { promisify, inspect } = require('util');
 
 const Apify = require('apify');
@@ -12,15 +13,18 @@ const schema = require('../INPUT_SCHEMA.json');
 
 const { utils: { log, puppeteer } } = Apify;
 
-exports.requestToRpOpts = (request) => {
-    const opts = _.pick(request, 'url', 'method', 'headers');
-    opts.body = request.payload;
+exports.evalPageFunctionOrThrow = (funcString) => {
+    let func;
 
-    return opts;
-};
+    try {
+        func = vm.runInThisContext(funcString);
+    } catch (err) {
+        throw new Error(`Compilation of pageFunction failed.\n${err.stack.substr(err.stack.indexOf('\n'))}`);
+    }
 
-exports.wrapPageFunction = (pageFunctionString, namespace) => {
-    return `window['${namespace}'].pageFunction = ${pageFunctionString}`;
+    if (!_.isFunction(func)) throw new Error('Input parameter "pageFunction" is not a function!');
+
+    return func;
 };
 
 /**
@@ -46,16 +50,6 @@ exports.enqueueLinks = async (page, linkSelector, pseudoUrls, requestQueue, pare
     queueOperationInfos.forEach(({ requestId }) => {
         parentRequest.userData[META_KEY].childRequestIds[requestId] = 1;
     });
-};
-
-exports.maybeParseJson = (maybeJson, paramName) => {
-    if (!_.isString(maybeJson)) return maybeJson;
-
-    try {
-        return JSON.parse(maybeJson);
-    } catch (err) {
-        throw new Error(`Input parameter ${paramName} is not valid JSON: ${err}`);
-    }
 };
 
 exports.checkInputOrThrow = (input) => {
