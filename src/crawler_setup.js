@@ -24,7 +24,7 @@ const { utils: { log, puppeteer } } = Apify;
  * @property {boolean} injectJQuery
  * @property {boolean} injectUnderscore
  * @property {boolean} downloadMedia
- * @property {boolean} downloadCSS
+ * @property {boolean} downloadCss
  * @property {boolean} ignoreSslErrors
  * @property {number} maxRequestRetries
  * @property {number} maxPagesPerCrawl
@@ -81,7 +81,7 @@ class CrawlerSetup {
         // Excluded resources
         this.blockedResources = new Set(['font', 'image', 'media', 'stylesheet']);
         if (this.input.downloadMedia) ['font', 'image', 'media'].forEach(m => this.blockedResources.delete(m));
-        if (this.input.downloadCSS) this.blockedResources.delete('stylesheet');
+        if (this.input.downloadCss) this.blockedResources.delete('stylesheet');
 
         // Start Chromium with Debugger any time the page function includes the keyword.
         this.devtools = this.input.pageFunction.includes('debugger;');
@@ -113,8 +113,7 @@ class CrawlerSetup {
     }
 
     /**
-     * Resolves to an options object that may be directly passed to a `PuppeteerCrawler`
-     * constructor.
+     * Resolves to a `PuppeteerCrawler` instance.
      * @returns {Promise<PuppeteerCrawler>}
      */
     async createCrawler() {

@@ -1,4 +1,5 @@
 const Apify = require('apify');
+const tools = require('./tools');
 
 const { utils: { log } } = Apify;
 
@@ -26,10 +27,11 @@ class Context {
         };
 
         // Public
-        this.input = JSON.parse(crawlerSetup.rawInput);
+        this.input = crawlerSetup.rawInput;
         this.env = Object.assign({}, crawlerSetup.env);
         this.customData = crawlerSetup.customData;
 
+        this.saveSnapshot = () => tools.saveSnapshot(pageFunctionArguments.page);
         this.log = log;
         this.globalStore = crawlerSetup.globalStore;
         this.requestList = crawlerSetup.requestList;
@@ -37,6 +39,7 @@ class Context {
         this.dataset = crawlerSetup.dataset;
         this.keyValueStore = crawlerSetup.keyValueStore;
         this.client = Apify.client;
+        this.Apify = Apify;
 
         Object.assign(this, pageFunctionArguments);
     }
@@ -52,7 +55,7 @@ class Context {
     }
 
     enqueuePage(newRequest) {
-        if (!this[setup].useRequestQueue) {
+        if (!this[setup].input.useRequestQueue) {
             throw new Error('Input parameter "useRequestQueue" must be set to true to be able to enqueue new requests.');
         }
         return this.requestQueue.addRequest(newRequest);

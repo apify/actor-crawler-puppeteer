@@ -8,8 +8,8 @@
             "type": "array",
             "description": "URLs to start with",
             "prefill": [
-                { "url": "https://www.example.com" },
-                { "url": "https://www.iana.org" }
+                { "url": "http://example.com" },
+                { "url": "http://iana.org" }
             ],
             "editor": "requestListSources"
         },
@@ -24,10 +24,12 @@
             "type": "array",
             "description": "Pseudo-URLs to match links in the page that you want to enqueue. Combine with Link selector to tell the crawler where to find links.",
             "editor": "pseudoUrls",
+            "default": [],
             "prefill": [
-                { "purl": "https://www.iana.org/[.*]"}
-            ],
-            "default": []
+                {
+                    "purl": "https://www.iana.org/[((?!\\.pdf$).)*]"
+                }
+            ]
         },
         "linkSelector": {
             "title": "Link selector",
@@ -99,19 +101,19 @@
             "unit": "pages"
         },
         "maxResultsPerCrawl": {
-          "title": "Max result records",
-          "type": "integer",
-          "description": "Maximum number of results that will be saved to dataset. The crawler will terminate afterwards. 0 means unlimited.",
-          "minimum": 0,
-          "default": 0,
-          "unit": "results"
+            "title": "Max result records",
+            "type": "integer",
+            "description": "Maximum number of results that will be saved to dataset. The crawler will terminate afterwards. 0 means unlimited.",
+            "minimum": 0,
+            "default": 0,
+            "unit": "results"
         },
         "maxCrawlingDepth": {
-          "title": "Max crawling depth",
-          "type": "integer",
-          "description": "Defines how many links away from the StartURLs will the crawler descend. 0 means unlimited.",
-          "minimum": 0,
-          "default": 0
+            "title": "Max crawling depth",
+            "type": "integer",
+            "description": "Defines how many links away from the StartURLs will the crawler descend. 0 means unlimited.",
+            "minimum": 0,
+            "default": 0
         },
         "pageLoadTimeoutSecs": {
             "title": "Page load timeout",

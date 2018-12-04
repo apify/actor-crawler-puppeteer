@@ -8,7 +8,7 @@ const Apify = require('apify');
 const _ = require('underscore');
 const Ajv = require('ajv');
 
-const { META_KEY, RESOURCE_LOAD_ERROR_MESSAGE, PAGE_FUNCTION_FILENAME } = require('./consts');
+const { META_KEY, RESOURCE_LOAD_ERROR_MESSAGE, PAGE_FUNCTION_FILENAME, SNAPSHOT } = require('./consts');
 const schema = require('../INPUT_SCHEMA.json');
 
 const { utils: { log, puppeteer } } = Apify;
@@ -39,13 +39,20 @@ exports.evalPageFunctionOrThrow = (funcString) => {
  * @return {Promise}
  */
 exports.enqueueLinks = async (page, linkSelector, pseudoUrls, requestQueue, parentRequest) => {
-    const pseudoUrlsWithMeta = exports.addDepthMetadataToPurls(pseudoUrls, parentRequest);
-    const queueOperationInfos = await puppeteer.enqueueLinks(
+    const parentDepth = parentRequest.userData[META_KEY].depth || 0;
+    const depthMeta = {
+        depth: parentDepth + 1,
+        parentRequestId: parentRequest.id,
+        childRequestIds: {},
+    };
+    const userData = { [META_KEY]: depthMeta };
+    const queueOperationInfos = await puppeteer.enqueueLinks({
         page,
-        linkSelector,
+        selector: linkSelector,
         requestQueue,
-        pseudoUrlsWithMeta,
-    );
+        pseudoUrls,
+        userData,
+    });
 
     queueOperationInfos.forEach(({ requestId }) => {
         parentRequest.userData[META_KEY].childRequestIds[requestId] = 1;
@@ -131,45 +138,6 @@ exports.createRandomHash = async () => {
         .replace(/[+/=]/g, 'x') // Remove invalid chars.
         .replace(/^\d/, 'a'); // Ensure first char is not a digit.
 };
-/**
- * Attaches the provided function to the Browser context
- * by exposing it via page.exposeFunction. Returns a string
- * handle to be used to reference the exposed function in
- * the browser context.
- *
- * @param {Page} page
- * @param {Function} func
- * @returns {string}
- */
-exports.createBrowserHandle = async (page, func) => {
-    const handle = await exports.createRandomHash();
-    await page.exposeFunction(handle, func);
-    return handle;
-};
-
-/**
- * Exposes selected methods of an instance (of a Class or just an Object)
- * in the Browser context and returns their mapping.
- *
- * @param {Page} page
- * @param {Object} instance
- * @param {string[]} methods
- * @return {Promise<Object>}
- */
-exports.createBrowserHandlesForObject = async (page, instance, methods) => {
-    const selectedMethods = _.pick(instance, methods);
-    const promises = Object
-        .entries(selectedMethods)
-        .map(async ([name, method]) => {
-            const handle = await exports.createBrowserHandle(page, method.bind(instance));
-            return { name, handle };
-        });
-    const props = await Promise.all(promises);
-    return props.reduce((mappings, prop) => {
-        mappings[prop.name] = prop.handle;
-        return mappings;
-    }, {});
-};
 
 /**
  * Attaches a console listener to page's console that
@@ -224,37 +192,6 @@ exports.dumpConsole = (page, options = {}) => {
  */
 exports.isPlainObject = item => item && typeof item === 'object' && !Array.isArray(item);
 
-/**
- * Apify.utils.puppeteer.enqueueLinks does not support appending information
- * to the Requests it creates and neither does it support depth metadata
- * so we stick the metadata to the Pseudo URL objects we received on INPUT
- * and enqueueLinks will then construct PseudoURLs with relevant requestTemplates,
- * which in turn will make sure the metadata are available on the Requests
- * in the RequestQueue.
- *
- * @param {Object[]} pseudoUrls
- * @param {Request} parentRequest
- */
-exports.addDepthMetadataToPurls = (pseudoUrls, parentRequest) => {
-    // Make a deep copy since we must not modify original pseudo URLs.
-    pseudoUrls = JSON.parse(JSON.stringify(pseudoUrls));
-
-    const parentDepth = parentRequest.userData[META_KEY].depth || 0;
-    const depthMeta = {
-        depth: parentDepth + 1,
-        parentRequestId: parentRequest.id,
-        childRequestIds: {},
-    };
-
-    return pseudoUrls.map((purlObj) => {
-        purlObj.userData = !purlObj.userData // eslint-disable-line no-nested-ternary
-            ? { [META_KEY]: depthMeta }
-            : purlObj.userData[META_KEY]
-                ? Object.assign(purlObj.userData[META_KEY], depthMeta)
-                : Object.assign(purlObj.userData, { [META_KEY]: depthMeta });
-        return purlObj;
-    });
-};
 
 /**
  * Helper that throws after timeout secs with the error message.
@@ -265,39 +202,6 @@ exports.addDepthMetadataToPurls = (pseudoUrls, parentRequest) => {
 exports.createTimeoutPromise = async (timeoutSecs, errorMessage) => {
     await new Promise(res => setTimeout(res, timeoutSecs * 1000));
     throw new Error(errorMessage);
-};
-
-/**
- * Enables the use of legacy willFinishLater by resolving a Promise
- * from within the browser context using the provided finish function.
- * @return {{finish: (function(): void), finished: boolean, resolve: (function(): void), createFinishPromise: (function(): Promise)}}
- */
-exports.createWillFinishLaterWrapper = () => {
-    const wrapper = {
-        finished: false,
-        finish: () => {
-            log.debug('context.finish() was called!');
-            wrapper.resolve();
-        },
-        resolve: () => { wrapper.finished = true; },
-        createFinishPromise: () => new Promise((res) => { wrapper.resolve = res; }),
-    };
-    return wrapper;
-};
-
-/**
- * Add label to request for backwards compatibility with
- * Crawler code.
- *
- * @param request
- */
-exports.copyLabelToRequest = (request) => {
-    if (request.userData && request.userData.label) {
-        const requestCopy = JSON.parse(JSON.stringify(request));
-        requestCopy.label = request.userData.label;
-        return requestCopy;
-    }
-    return request;
 };
 
 /**
@@ -315,4 +219,34 @@ exports.maybeLoadPageFunctionFromDisk = (input) => {
     } catch (err) {
         log.debug('Page Function load from disk failed.');
     }
+};
+
+/**
+ * Since snapshots are throttled, this tells us when the last
+ * snapshot was taken.
+ */
+let lastSnapshotTimestamp = 0;
+
+/**
+ * Saves raw HTML and a screenshot to the default key value store
+ * under the SNAPSHOT-HTML and SNAPSHOT-SCREENSHOT keys.
+ *
+ * @param {Page} page
+ */
+exports.saveSnapshot = async (page) => {
+    // Throttle snapshots.
+    const now = Date.now();
+    if (now - lastSnapshotTimestamp < SNAPSHOT.TIMEOUT_SECS * 1000) {
+        log.warning(`Aborting saveSnapshot(). It can only be invoked once in ${SNAPSHOT.TIMEOUT_SECS} secs to prevent database overloading.`);
+        return;
+    }
+    lastSnapshotTimestamp = now;
+
+    const htmlP = page.content();
+    const screenshotP = page.screenshot();
+    const [html, screenshot] = await Promise.all([htmlP, screenshotP]);
+    await Promise.all([
+        Apify.setValue(SNAPSHOT.KEYS.HTML, html, { contentType: 'text/html' }),
+        Apify.setValue(SNAPSHOT.KEYS.SCREENSHOT, screenshot, { contentType: 'image/png' }),
+    ]);
 };
