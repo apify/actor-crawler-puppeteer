@@ -1,5 +1,8 @@
-# Apify Crawler Puppeteer
+# DEPRECATED: Apify Crawler Puppeteer
 
+Visit https://github.com/apifytech/actor-scraper/tree/master/puppeteer-scraper for the current version.
+
+------------------------
 <!-- toc -->
 
 - [How it works](#how-it-works)
